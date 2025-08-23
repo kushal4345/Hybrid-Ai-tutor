@@ -1,0 +1,55 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+*.log
+
+# ---- Virtual Environments ----
+.env
+.venv/
+env/
+venv/
+ENV/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ---- IDE & Editor Files ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- OS Files ----
+.DS_Store
+Thumbs.db
+
+# ---- Environment & Secrets ----
+.env              # your environment variables (API keys, DB creds, etc.)
+*.env.local
+*.secret
+secrets.json
+
+# ---- Cache ----
+.cache/
+.mypy_cache/
+.pytest_cache/
+__snapshots__/
+
+# ---- Jupyter ----
+.ipynb_checkpoints
+
+# ---- Node (if you have frontend in same repo) ----
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnp/
+.pnp.js
