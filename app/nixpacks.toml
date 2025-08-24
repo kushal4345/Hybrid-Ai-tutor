@@ -1,0 +1,14 @@
+# This file is app/nixpacks.toml
+
+# This section tells Nixpacks to install system-level packages first.
+# We are adding the 'mupdf' library that PyMuPDF needs to work correctly.
+[phases.setup]
+nixPkgs = ["pkgs.mupdf", "pkgs.mupdf-tools"]
+
+# This section explicitly tells Nixpacks how to install your Python libraries.
+[phases.install]
+cmds = ["pip install -r requirements.txt"]
+
+# This section explicitly defines the command to start your server.
+[start]
+cmd = "uvicorn main:app --host 0.0.0.0 --port $PORT"
