@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+pydantic
+python-dotenv
+pymongo
+pinecone-client>=3.0.0
+fitz
+PyMuPDF
+langchain
+langchain-openai
+langchain-pinecone
