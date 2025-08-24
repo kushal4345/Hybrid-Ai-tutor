@@ -1,15 +1,16 @@
-# Final Dockerfile
+# Final and Corrected Dockerfile
 
-# Start from a standard Python 3.11 image.
+# Start from a standard, lightweight Python 3.11 image.
 FROM python:3.11-slim
 
 # Set the working directory inside the container.
 WORKDIR /app
 
-# Install system libraries needed for PyMuPDF (fitz).
+# Install the CORRECT system-level libraries for PyMuPDF (fitz).
+# 'mupdf' and 'libmupdf-dev' are the correct package names for this environment.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    mupdf \
     libmupdf-dev \
-    mupdf-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the requirements file into the container.
