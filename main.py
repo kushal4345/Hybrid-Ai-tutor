@@ -16,9 +16,9 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_pinecone import PineconeVectorStore
 from langchain.schema import SystemMessage, HumanMessage, AIMessage
 from langchain.docstore.document import Document
+from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
-
 class KnowledgeRequest(BaseModel):
     topic: str
     index_name: str
@@ -31,6 +31,20 @@ class ChatRequest(BaseModel):
 app = FastAPI(
     title="AI Tutor - Full API",
     description="Handles PDF processing, graph generation, summaries, and chat."
+)
+origins = [
+    "http://127.0.0.1:5500", # The address of your local HTML file
+    "http://localhost:5500", # Another common address for local files
+    "null", # This is important for requests from local files (origin: null)
+    # Add your future frontend's deployed URL here later
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # Allow all methods (GET, POST, etc.)
+    allow_headers=["*"], # Allow all headers
 )
 
 try:
