@@ -1,9 +1,9 @@
 # This file is app/nixpacks.toml
 
-# This section tells Nixpacks to install system-level packages first.
-# We are adding the 'mupdf' library that PyMuPDF needs to work correctly.
+# This section tells Nixpacks to install the required system package for PyMuPDF.
+# We ONLY need the main 'mupdf' library.
 [phases.setup]
-nixPkgs = ["pkgs.mupdf", "pkgs.mupdf-tools"]
+nixPkgs = ["pkgs.mupdf"]
 
 # This section explicitly tells Nixpacks how to install your Python libraries.
 [phases.install]
