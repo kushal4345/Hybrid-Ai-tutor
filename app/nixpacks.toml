@@ -1,13 +1,13 @@
 # This file is app/nixpacks.toml
 
-# This section tells Nixpacks to install the required system package for PyMuPDF.
-# We ONLY need the main 'mupdf' library.
+# This section tells Nixpacks to install the base language (Python with pip)
+# AND the required system libraries for PyMuPDF.
 [phases.setup]
-nixPkgs = ["pkgs.mupdf"]
+nixPkgs = ["pkgs.python311", "pkgs.python311Packages.pip", "pkgs.mupdf"]
 
 # This section explicitly tells Nixpacks how to install your Python libraries.
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+cmds = ["python -m pip install -r requirements.txt"]
 
 # This section explicitly defines the command to start your server.
 [start]
