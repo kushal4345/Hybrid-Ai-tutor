@@ -19,6 +19,8 @@ from langchain.docstore.document import Document
 from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
+
+# --- Pydantic Models ---
 class KnowledgeRequest(BaseModel):
     topic: str
     index_name: str
@@ -28,25 +30,28 @@ class ChatRequest(BaseModel):
     index_name: str
     user_message: str
 
+# --- FastAPI App Initialization ---
 app = FastAPI(
     title="AI Tutor - Full API",
     description="Handles PDF processing, graph generation, summaries, and chat."
 )
+
+# --- CORS Middleware ---
 origins = [
-    "http://127.0.0.1:5500", # The address of your local HTML file
-    "http://localhost:5500", # Another common address for local files
-    "null", # This is important for requests from local files (origin: null)
-    # Add your future frontend's deployed URL here later
+    "http://127.0.0.1:5500",
+    "http://localhost:5500",
+    "null",
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"], # Allow all methods (GET, POST, etc.)
-    allow_headers=["*"], # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
+# --- Service Initializations ---
 try:
     llm = AzureChatOpenAI(
         azure_deployment=os.getenv("AZURE_DEPLOYMENT_NAME"),
@@ -58,14 +63,14 @@ try:
     )
     print("Successfully initialized Azure OpenAI clients.")
 except Exception as e:
-    print(f" Error initializing Azure OpenAI clients: {e}")
+    print(f"Error initializing Azure OpenAI clients: {e}")
     llm = None
     embeddings = None
 
 try:
     PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
     pc = Pinecone(api_key=PINECONE_API_KEY)
-    print(" Successfully connected to Pinecone!")
+    print("Successfully connected to Pinecone!")
 except Exception as e:
     print(f"Error connecting to Pinecone: {e}")
     pc = None
@@ -76,11 +81,12 @@ try:
     db = mongo_client.get_database("ai_tutor_db")
     chat_history_collection = db.get_collection("chat_histories")
     mongo_client.server_info()
-    print(" Successfully connected to MongoDB!")
+    print("Successfully connected to MongoDB!")
 except Exception as e:
     print(f"Error connecting to MongoDB: {e}")
     mongo_client = None
 
+# --- Helper Functions ---
 def sanitize_filename(filename: str) -> str:
     return "".join(c if c.isalnum() else '-' for c in filename).lower()
 
@@ -131,6 +137,7 @@ def get_chat_history(chat_id: str) -> list:
             history.append(AIMessage(content=msg["content"]))
     return history
 
+# --- API Endpoints ---
 @app.post("/api/process-pdf")
 async def process_pdf_and_create_graph(file: UploadFile = File(...)):
     if not all([pc, llm, embeddings]):
@@ -239,4 +246,55 @@ async def chat_with_topic(request: ChatRequest):
         return {"ai_response": ai_response}
     except Exception as e:
         print(f"An error occurred during chat: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- NEW API ENDPOINT FOR FULL LEGAL DOCUMENT SUMMARY ---
+@app.post("/api/summarize-legal-document")
+async def summarize_legal_document(file: UploadFile = File(...)):
+    if not llm:
+        raise HTTPException(status_code=500, detail="LLM service is not initialized.")
+
+    try:
+        # 1. Extract all text from the PDF
+        pdf_bytes = await file.read()
+        pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
+        full_text = "".join(page.get_text() for page in pdf_document)
+        pdf_document.close()
+
+        if not full_text.strip():
+            raise HTTPException(status_code=400, detail="No text could be extracted from the PDF.")
+
+        # 2. Create a specialized prompt for legal document summarization
+        legal_summary_prompt_template = """
+        You are a highly skilled legal analyst AI. Your task is to provide a comprehensive summary of the following legal document.
+        Analyze the full text provided and structure your summary to highlight the most critical information.
+
+        Your summary should be well-organized and include the following sections if applicable:
+        - **Document Type and Purpose:** Identify the type of legal document (e.g., Contract, NDA, Lease Agreement) and its primary purpose.
+        - **Key Parties:** List all parties involved and their roles (e.g., Client, Contractor, Landlord, Tenant).
+        - **Core Obligations and Responsibilities:** Detail the main duties, responsibilities, and performance requirements for each party.
+        - **Key Clauses and Terms:** Identify and explain the most significant clauses, such as term length, payment terms, confidentiality, liability limitations, termination conditions, and dispute resolution.
+        - **Important Dates and Deadlines:** Extract any critical dates, deadlines, or timelines mentioned in the document.
+        - **Governing Law and Jurisdiction:** State the governing law and the jurisdiction for any legal disputes.
+        - **Potential Risks and Red Flags:** Highlight any clauses or terms that could be ambiguous, one-sided, or pose a potential risk to any party.
+
+        Based on the text below, generate this detailed legal summary.
+
+        LEGAL DOCUMENT TEXT:
+        ---
+        {document_text}
+        ---
+        """
+
+        prompt = ChatPromptTemplate.from_template(legal_summary_prompt_template)
+        
+        # 3. Create and invoke the summarization chain
+        chain = prompt | llm | StrOutputParser()
+        summary = chain.invoke({"document_text": full_text})
+        
+        # 4. Return the summary
+        return {"summary": summary}
+
+    except Exception as e:
+        print(f"An error occurred during full document summarization: {e}")
         raise HTTPException(status_code=500, detail=str(e))
