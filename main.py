@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv()
 
 # --- Pydantic Models ---
+# KEPT: The new model for the traceability feature
 class GraphKnowledgeRequest(BaseModel):
     clicked_node_id: str
     nodes: list
@@ -99,29 +100,18 @@ def extract_json_from_string(text: str) -> str:
     else:
         raise ValueError("No valid JSON object found in the LLM output.")
 
-# --- UPDATED FUNCTION WITH RISK ANALYSIS ---
+# --- REVERTED FUNCTION ---
+# This is the original, fast prompt that will not time out on Render
 def generate_graph_from_text(document_text: str) -> str:
     global llm
     prompt_template = """
-    You are an AI legal analyst. Based on the following text, identify the main topics and their relationships.
-    Your primary task is to generate a JSON object with two keys: "nodes" and "edges".
-
-    For the "nodes", each object MUST contain three keys:
-    1. "id": A unique string identifier.
-    2. "label": The name of the topic.
-    3. "color": Your risk assessment of the topic, categorized as "red", "yellow", or "green".
-
-    Use the following criteria for the "color" key:
-    - "red": For topics that represent high risk, potential conflict, or significant obligations/penalties (e.g., Termination, Liability, Non-Compete).
-    - "yellow": For topics that are neutral but require careful attention, defining the core mechanics of the agreement (e.g., Scope of Services, Payment Terms, Confidentiality).
-    - "green": For topics that are informational, standard, or pose low risk (e.g., Party Names, Effective Date, Governing Law).
-
-    For the "edges", each object should have a "source" and a "target" id.
-
-    IMPORTANT: Your response MUST BE ONLY the JSON object. Do not include any extra text,
+    Based on the following text, identify the main topics and their relationships.
+    Generate a JSON object with two keys: "nodes" and "edges".
+    - "nodes" should be a list of objects, each with an "id" and "label".
+    - "edges" should be a list of objects, each with a "source" and a "target" id.
+    IMPORTANT: Your response MUST be ONLY the JSON object. Do not include any extra text,
     explanations, or markdown formatting like ```json. The response must start with a '{{'
     and end with a '}}'.
-
     Here is the text:
     ---
     {text_chunk}
@@ -130,7 +120,7 @@ def generate_graph_from_text(document_text: str) -> str:
     prompt = ChatPromptTemplate.from_template(prompt_template)
     chain = prompt | llm | StrOutputParser()
     llm_raw_output = chain.invoke({"text_chunk": document_text})
-    print(f"LLM RAW OUTPUT (with color): {llm_raw_output}")
+    print(f"LLM RAW OUTPUT: {llm_raw_output}")
     return extract_json_from_string(llm_raw_output)
 
 def add_message_to_history(chat_id: str, user_message: str, ai_response: str):
@@ -199,6 +189,7 @@ async def process_pdf_and_create_graph(file: UploadFile = File(...)):
         print(f"An error occurred: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# KEPT: The new, powerful summary endpoint for traceability
 @app.post("/api/get-summary")
 async def get_summary(request: GraphKnowledgeRequest):
     if not all([pc, llm, embeddings]):
@@ -267,12 +258,14 @@ async def chat_with_topic(request: ChatRequest):
         vector_store = PineconeVectorStore.from_existing_index(request.index_name, embeddings)
         retriever = vector_store.as_retriever(search_kwargs={"k": 4})
         relevant_docs = retriever.invoke(request.user_message)
-        context_text = "\n\n".join([f"Source (Page {doc.metadata.get('page', 'N/A')}):\n{doc.page_content}" for doc in relevant_docs])
+        context_text = "\n\n".join([
+            f"Source (Page {doc.metadata.get('page', 'N/A')}):\n{doc.page_content}" 
+            for doc in relevant_docs
+        ])
         
         system_prompt = f"""
         You are an expert AI tutor for the topic of "{request.chat_id}".
         Your goal is to provide the best possible answer. Base your answer on the user's conversation history and the relevant context from the document provided below. Prioritize the document's information.
-        
         CONTEXT FROM DOCUMENT:
         ---
         {context_text}
@@ -292,50 +285,4 @@ async def chat_with_topic(request: ChatRequest):
         return {"ai_response": ai_response}
     except Exception as e:
         print(f"An error occurred during chat: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/summarize-legal-document")
-async def summarize_legal_document(file: UploadFile = File(...)):
-    if not llm:
-        raise HTTPException(status_code=500, detail="LLM service is not initialized.")
-
-    try:
-        pdf_bytes = await file.read()
-        pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
-        full_text = "".join(page.get_text() for page in pdf_document)
-        pdf_document.close()
-
-        if not full_text.strip():
-            raise HTTPException(status_code=400, detail="No text could be extracted from the PDF.")
-
-        legal_summary_prompt_template = """
-        You are a highly skilled legal analyst AI. Your task is to provide a comprehensive summary of the following legal document.
-        Analyze the full text provided and structure your summary to highlight the most critical information.
-
-        Your summary should be well-organized and include the following sections if applicable:
-        - **Document Type and Purpose**
-        - **Key Parties**
-        - **Core Obligations and Responsibilities**
-        - **Key Clauses and Terms**
-        - **Important Dates and Deadlines**
-        - **Governing Law and Jurisdiction**
-        - **Potential Risks and Red Flags**
-
-        Based on the text below, generate this detailed legal summary.
-
-        LEGAL DOCUMENT TEXT:
-        ---
-        {document_text}
-        ---
-        """
-
-        prompt = ChatPromptTemplate.from_template(legal_summary_prompt_template)
-        
-        chain = prompt | llm | StrOutputParser()
-        summary = chain.invoke({"document_text": full_text})
-        
-        return {"summary": summary}
-
-    except Exception as e:
-        print(f"An error occurred during full document summarization: {e}")
         raise HTTPException(status_code=500, detail=str(e))
