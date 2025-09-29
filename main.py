@@ -21,8 +21,10 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv()
 
 # --- Pydantic Models ---
-class KnowledgeRequest(BaseModel):
-    topic: str
+class GraphKnowledgeRequest(BaseModel):
+    clicked_node_id: str
+    nodes: list
+    edges: list
     index_name: str
 
 class ChatRequest(BaseModel):
@@ -97,16 +99,29 @@ def extract_json_from_string(text: str) -> str:
     else:
         raise ValueError("No valid JSON object found in the LLM output.")
 
+# --- UPDATED FUNCTION WITH RISK ANALYSIS ---
 def generate_graph_from_text(document_text: str) -> str:
     global llm
     prompt_template = """
-    Based on the following text, identify the main topics and their relationships.
-    Generate a JSON object with two keys: "nodes" and "edges".
-    - "nodes" should be a list of objects, each with an "id" and "label".
-    - "edges" should be a list of objects, each with a "source" and a "target" id.
-    IMPORTANT: Your response MUST be ONLY the JSON object. Do not include any extra text,
+    You are an AI legal analyst. Based on the following text, identify the main topics and their relationships.
+    Your primary task is to generate a JSON object with two keys: "nodes" and "edges".
+
+    For the "nodes", each object MUST contain three keys:
+    1. "id": A unique string identifier.
+    2. "label": The name of the topic.
+    3. "color": Your risk assessment of the topic, categorized as "red", "yellow", or "green".
+
+    Use the following criteria for the "color" key:
+    - "red": For topics that represent high risk, potential conflict, or significant obligations/penalties (e.g., Termination, Liability, Non-Compete).
+    - "yellow": For topics that are neutral but require careful attention, defining the core mechanics of the agreement (e.g., Scope of Services, Payment Terms, Confidentiality).
+    - "green": For topics that are informational, standard, or pose low risk (e.g., Party Names, Effective Date, Governing Law).
+
+    For the "edges", each object should have a "source" and a "target" id.
+
+    IMPORTANT: Your response MUST BE ONLY the JSON object. Do not include any extra text,
     explanations, or markdown formatting like ```json. The response must start with a '{{'
     and end with a '}}'.
+
     Here is the text:
     ---
     {text_chunk}
@@ -115,7 +130,7 @@ def generate_graph_from_text(document_text: str) -> str:
     prompt = ChatPromptTemplate.from_template(prompt_template)
     chain = prompt | llm | StrOutputParser()
     llm_raw_output = chain.invoke({"text_chunk": document_text})
-    print(f"LLM RAW OUTPUT: {llm_raw_output}")
+    print(f"LLM RAW OUTPUT (with color): {llm_raw_output}")
     return extract_json_from_string(llm_raw_output)
 
 def add_message_to_history(chat_id: str, user_message: str, ai_response: str):
@@ -185,23 +200,56 @@ async def process_pdf_and_create_graph(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/get-summary")
-async def get_summary(request: KnowledgeRequest):
+async def get_summary(request: GraphKnowledgeRequest):
     if not all([pc, llm, embeddings]):
         raise HTTPException(status_code=500, detail="A required service is not initialized.")
 
     try:
-        vector_store = PineconeVectorStore.from_existing_index(request.index_name, embeddings)
-        retriever = vector_store.as_retriever(search_kwargs={"k": 4})
-        relevant_docs = retriever.invoke(request.topic)
-        context_text = "\n\n".join([
-            f"Source (Page {doc.metadata.get('page', 'N/A')}):\n{doc.page_content}" 
-            for doc in relevant_docs
-        ])
+        clicked_node = next((node for node in request.nodes if node['id'] == request.clicked_node_id), None)
+        if not clicked_node:
+            raise HTTPException(status_code=404, detail="Clicked node not found in the graph.")
 
-        summary_prompt_template = "Based *only* on the following text, write a concise summary of the topic: '{topic}'.\n\nText:\n---\n{context}\n---"
+        main_topic = clicked_node['label']
+        neighbor_ids = set()
+        
+        for edge in request.edges:
+            if edge['source'] == request.clicked_node_id:
+                neighbor_ids.add(edge['target'])
+            elif edge['target'] == request.clicked_node_id:
+                neighbor_ids.add(edge['source'])
+        
+        neighbor_labels = [node['label'] for node in request.nodes if node['id'] in neighbor_ids]
+
+        if neighbor_labels:
+            contextual_query = f"Explain '{main_topic}' and how it relates to the following concepts: {', '.join(neighbor_labels)}."
+        else:
+            contextual_query = f"Provide a detailed summary of the topic: '{main_topic}'."
+        
+        print(f"Constructed Contextual Query: {contextual_query}")
+
+        vector_store = PineconeVectorStore.from_existing_index(request.index_name, embeddings)
+        retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+        relevant_docs = retriever.invoke(contextual_query)
+        context_text = "\n\n".join([f"Source (Page {doc.metadata.get('page', 'N/A')}):\n{doc.page_content}" for doc in relevant_docs])
+
+        summary_prompt_template = (
+            "You are a helpful AI assistant. Based *only* on the provided text, "
+            "provide a clear and detailed explanation of the main topic and how it connects "
+            "to the related topics mentioned.\n\n"
+            "Main Topic: '{main_topic}'\n"
+            "Related Topics: {related_topics}\n\n"
+            "Text from Document:\n---\n{context}\n---\n"
+            "Your Explanation:"
+        )
+
         prompt = ChatPromptTemplate.from_template(summary_prompt_template)
         chain = prompt | llm | StrOutputParser()
-        summary = chain.invoke({"topic": request.topic, "context": context_text})
+        
+        summary = chain.invoke({
+            "main_topic": main_topic,
+            "related_topics": ", ".join(neighbor_labels) if neighbor_labels else "None",
+            "context": context_text
+        })
         
         return {"summary": summary}
     except Exception as e:
@@ -219,14 +267,12 @@ async def chat_with_topic(request: ChatRequest):
         vector_store = PineconeVectorStore.from_existing_index(request.index_name, embeddings)
         retriever = vector_store.as_retriever(search_kwargs={"k": 4})
         relevant_docs = retriever.invoke(request.user_message)
-        context_text = "\n\n".join([
-            f"Source (Page {doc.metadata.get('page', 'N/A')}):\n{doc.page_content}" 
-            for doc in relevant_docs
-        ])
+        context_text = "\n\n".join([f"Source (Page {doc.metadata.get('page', 'N/A')}):\n{doc.page_content}" for doc in relevant_docs])
         
         system_prompt = f"""
         You are an expert AI tutor for the topic of "{request.chat_id}".
         Your goal is to provide the best possible answer. Base your answer on the user's conversation history and the relevant context from the document provided below. Prioritize the document's information.
+        
         CONTEXT FROM DOCUMENT:
         ---
         {context_text}
@@ -248,14 +294,12 @@ async def chat_with_topic(request: ChatRequest):
         print(f"An error occurred during chat: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- NEW API ENDPOINT FOR FULL LEGAL DOCUMENT SUMMARY ---
 @app.post("/api/summarize-legal-document")
 async def summarize_legal_document(file: UploadFile = File(...)):
     if not llm:
         raise HTTPException(status_code=500, detail="LLM service is not initialized.")
 
     try:
-        # 1. Extract all text from the PDF
         pdf_bytes = await file.read()
         pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
         full_text = "".join(page.get_text() for page in pdf_document)
@@ -264,19 +308,18 @@ async def summarize_legal_document(file: UploadFile = File(...)):
         if not full_text.strip():
             raise HTTPException(status_code=400, detail="No text could be extracted from the PDF.")
 
-        # 2. Create a specialized prompt for legal document summarization
         legal_summary_prompt_template = """
         You are a highly skilled legal analyst AI. Your task is to provide a comprehensive summary of the following legal document.
         Analyze the full text provided and structure your summary to highlight the most critical information.
 
         Your summary should be well-organized and include the following sections if applicable:
-        - **Document Type and Purpose:** Identify the type of legal document (e.g., Contract, NDA, Lease Agreement) and its primary purpose.
-        - **Key Parties:** List all parties involved and their roles (e.g., Client, Contractor, Landlord, Tenant).
-        - **Core Obligations and Responsibilities:** Detail the main duties, responsibilities, and performance requirements for each party.
-        - **Key Clauses and Terms:** Identify and explain the most significant clauses, such as term length, payment terms, confidentiality, liability limitations, termination conditions, and dispute resolution.
-        - **Important Dates and Deadlines:** Extract any critical dates, deadlines, or timelines mentioned in the document.
-        - **Governing Law and Jurisdiction:** State the governing law and the jurisdiction for any legal disputes.
-        - **Potential Risks and Red Flags:** Highlight any clauses or terms that could be ambiguous, one-sided, or pose a potential risk to any party.
+        - **Document Type and Purpose**
+        - **Key Parties**
+        - **Core Obligations and Responsibilities**
+        - **Key Clauses and Terms**
+        - **Important Dates and Deadlines**
+        - **Governing Law and Jurisdiction**
+        - **Potential Risks and Red Flags**
 
         Based on the text below, generate this detailed legal summary.
 
@@ -288,11 +331,9 @@ async def summarize_legal_document(file: UploadFile = File(...)):
 
         prompt = ChatPromptTemplate.from_template(legal_summary_prompt_template)
         
-        # 3. Create and invoke the summarization chain
         chain = prompt | llm | StrOutputParser()
         summary = chain.invoke({"document_text": full_text})
         
-        # 4. Return the summary
         return {"summary": summary}
 
     except Exception as e:
